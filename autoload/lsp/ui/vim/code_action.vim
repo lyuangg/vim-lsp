@@ -178,7 +178,27 @@ function! s:handle_disabled_action(code_action) abort
     return v:false
 endfunction
 
+function! s:needs_resolve(code_action) abort
+    return !has_key(a:code_action, 'edit') && !has_key(a:code_action, 'command') && has_key(a:code_action, 'data')
+endfunction
+
+function! s:resolve_code_action(server_name, sync, bufnr, code_action) abort
+    call lsp#send_request(a:server_name, {
+        \ 'method': 'codeAction/resolve',
+        \ 'params': a:code_action,
+        \ 'sync': a:sync,
+        \ 'on_notification': {data ->
+        \     s:handle_one_code_action(a:server_name, a:sync, a:bufnr, data['response']['result'])},
+        \ })
+endfunction
+
 function! s:handle_one_code_action(server_name, sync, bufnr, command_or_code_action) abort
+    " Resolve code action if needed (server returned data but no edit/command).
+    if s:needs_resolve(a:command_or_code_action)
+        call s:resolve_code_action(a:server_name, a:sync, a:bufnr, a:command_or_code_action)
+        return
+    endif
+
     " has WorkspaceEdit.
     if has_key(a:command_or_code_action, 'edit')
         call lsp#utils#workspace_edit#apply_workspace_edit(a:command_or_code_action['edit'])
