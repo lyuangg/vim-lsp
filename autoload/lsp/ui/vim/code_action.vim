@@ -136,6 +136,8 @@ function! s:handle_code_action(ui, ctx, server_name, command_id, sync, query, bu
         call add(l:items, { 'title': l:title, 'item': l:action })
     endfor
 
+    " Clear 'Retrieving code actions ...' message
+    echo ''
     if lsp#utils#_has_popup_menu() && a:ui ==? 'float'
         call lsp#internal#ui#popupmenu#open({
             \   'title': 'Code actions',
@@ -155,7 +157,10 @@ function! s:handle_code_action(ui, ctx, server_name, command_id, sync, query, bu
 endfunction
 
 function! s:popup_accept_code_action(sync, bufnr, items, id, selected, ...) abort
-    if a:selected <= 0 | return | endif
+    if a:selected <= 0
+        echo ''
+        return
+    endif
     let l:item = a:items[a:selected - 1]['item']
     if s:handle_disabled_action(l:item) | return | endif
     call s:handle_one_code_action(l:item['server_name'], a:sync, a:bufnr, l:item['code_action'])
@@ -164,7 +169,10 @@ endfunction
 
 function! s:quickpick_accept_code_action(sync, bufnr, data, ...) abort
     call lsp#internal#ui#quickpick#close()
-    if empty(a:data['items']) | return | endif
+    if empty(a:data['items'])
+        echo ''
+        return
+    endif
     let l:selected = a:data['items'][0]['item']
     if s:handle_disabled_action(l:selected) | return | endif
     call s:handle_one_code_action(l:selected['server_name'], a:sync, a:bufnr, l:selected['code_action'])
