@@ -164,7 +164,6 @@ function! s:popup_accept_code_action(sync, bufnr, items, id, selected, ...) abor
     let l:item = a:items[a:selected - 1]['item']
     if s:handle_disabled_action(l:item) | return | endif
     call s:handle_one_code_action(l:item['server_name'], a:sync, a:bufnr, l:item['code_action'])
-    execute('doautocmd <nomodeline> User lsp_float_closed')
 endfunction
 
 function! s:quickpick_accept_code_action(sync, bufnr, data, ...) abort
