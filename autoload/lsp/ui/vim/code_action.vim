@@ -52,6 +52,7 @@ function! lsp#ui#vim#code_action#do(option) abort
                     \   'range': empty(l:diagnostic) || l:selection ? l:range : l:diagnostic['range'],
                     \   'context': {
                     \       'diagnostics' : empty(l:diagnostic) ? [] : [l:diagnostic],
+                    \       'triggerKind': 2,
                     \       'only': ['', 'quickfix', 'refactor', 'refactor.extract', 'refactor.inline', 'refactor.rewrite', 'source', 'source.organizeImports'],
                     \   },
                     \ },
@@ -98,6 +99,14 @@ function! s:handle_code_action(ui, ctx, server_name, command_id, sync, query, bu
             continue
         endif
 
+        " Client-side hierarchical filtering for context.only
+        " (servers may return actions outside the 'only' filter; filter here too)
+        let l:only_kinds = ['', 'quickfix', 'refactor', 'refactor.extract', 'refactor.inline', 'refactor.rewrite', 'source', 'source.organizeImports']
+        let l:code_actions = filter(l:code_actions, { _, action ->
+            \ !has_key(action, 'kind') || action['kind'] ==# '' ||
+            \   len(filter(copy(l:only_kinds), { _, k -> action['kind'] ==# k || action['kind'] =~# '^' . k . '\.' })) > 0
+            \ })
+
         for l:code_action in l:code_actions
             let l:item = {
             \   'server_name': l:server_name,
@@ -132,6 +141,9 @@ function! s:handle_code_action(ui, ctx, server_name, command_id, sync, query, bu
         let l:title = printf('[%s] %s', l:action['server_name'], l:action['code_action']['title'])
         if has_key(l:action['code_action'], 'kind') && l:action['code_action']['kind'] !=# ''
             let l:title .= ' (' . l:action['code_action']['kind'] . ')'
+        endif
+        if has_key(l:action['code_action'], 'disabled')
+            let l:title .= ' (disabled)'
         endif
         call add(l:items, { 'title': l:title, 'item': l:action })
     endfor
@@ -185,50 +197,96 @@ function! s:handle_disabled_action(code_action) abort
     return v:false
 endfunction
 
-function! s:needs_resolve(code_action) abort
-    return !has_key(a:code_action, 'edit') && !has_key(a:code_action, 'command') && has_key(a:code_action, 'data')
+"
+" Determine if a CodeAction needs to be resolved.
+" Matches neovim's logic: resolve if action is missing edit or command,
+" and the server supports codeAction/resolve.
+"
+function! s:needs_resolve(server_name, code_action) abort
+    " Don't resolve standalone Command objects (command is a string).
+    if has_key(a:code_action, 'command') && type(a:code_action['command']) == type('')
+        return v:false
+    endif
+    " Resolve if server supports it and action doesn't have both edit and command.
+    return !(has_key(a:code_action, 'edit') && has_key(a:code_action, 'command'))
+        \ && lsp#capabilities#has_code_action_resolve_provider(a:server_name)
 endfunction
 
+"
+" Resolve a CodeAction via codeAction/resolve.
+" On failure, falls back to the original action if it has edit or command.
+" On success, applies the resolved action directly (no re-check for resolve).
+"
 function! s:resolve_code_action(server_name, sync, bufnr, code_action) abort
     call lsp#send_request(a:server_name, {
         \ 'method': 'codeAction/resolve',
         \ 'params': a:code_action,
         \ 'sync': a:sync,
-        \ 'on_notification': {data ->
-        \     s:handle_one_code_action(a:server_name, a:sync, a:bufnr, data['response']['result'])},
+        \ 'on_notification': function('s:on_resolve_code_action',
+        \     [a:server_name, a:sync, a:bufnr, a:code_action]),
         \ })
 endfunction
 
-function! s:handle_one_code_action(server_name, sync, bufnr, command_or_code_action) abort
-    " Resolve code action if needed (server returned data but no edit/command).
-    if s:needs_resolve(a:command_or_code_action)
-        call s:resolve_code_action(a:server_name, a:sync, a:bufnr, a:command_or_code_action)
+function! s:on_resolve_code_action(server_name, sync, bufnr, original, data) abort
+    if lsp#client#is_error(a:data['response'])
+        if has_key(a:original, 'edit') || has_key(a:original, 'command')
+            call s:apply_action(a:server_name, a:sync, a:bufnr, a:original)
+        else
+            call lsp#utils#error('Code action resolve failed: ' . lsp#client#error_message(a:data['response']))
+        endif
+    else
+        call s:apply_action(a:server_name, a:sync, a:bufnr, a:data['response']['result'])
+    endif
+endfunction
+
+"
+" Execute a CodeAction or Command by applying its edit and/or sending its command.
+"
+function! s:apply_action(server_name, sync, bufnr, action) abort
+    " has WorkspaceEdit.
+    if has_key(a:action, 'edit')
+        call lsp#utils#workspace_edit#apply_workspace_edit(a:action['edit'])
+    endif
+
+    " Command (string form) - standalone Command object.
+    if has_key(a:action, 'command') && type(a:action['command']) == type('')
+        let l:cmd_name = get(a:action, 'command', '')
+        call lsp#ui#vim#execute_command#_execute({
+        \   'server_name': a:server_name,
+        \   'command_name': l:cmd_name,
+        \   'command_args': get(a:action, 'arguments', v:null),
+        \   'sync': a:sync,
+        \   'bufnr': a:bufnr,
+        \ })
+
+    " Command (object form) - CodeAction.command is a Command object.
+    elseif has_key(a:action, 'command') && type(a:action['command']) == type({})
+        let l:cmd_name = get(a:action['command'], 'command', '')
+        call lsp#ui#vim#execute_command#_execute({
+        \   'server_name': a:server_name,
+        \   'command_name': l:cmd_name,
+        \   'command_args': get(a:action['command'], 'arguments', v:null),
+        \   'sync': a:sync,
+        \   'bufnr': a:bufnr,
+        \ })
+    endif
+endfunction
+
+"
+" Handle one code action or command response.
+"
+function! s:handle_one_code_action(server_name, sync, bufnr, action) abort
+    " Standalone Command (command is a string) — apply directly, no resolve.
+    if has_key(a:action, 'command') && type(a:action['command']) == type('')
+        call s:apply_action(a:server_name, a:sync, a:bufnr, a:action)
         return
     endif
 
-    " has WorkspaceEdit.
-    if has_key(a:command_or_code_action, 'edit')
-        call lsp#utils#workspace_edit#apply_workspace_edit(a:command_or_code_action['edit'])
+    " CodeAction: resolve if server supports it and action is incomplete.
+    if s:needs_resolve(a:server_name, a:action)
+        call s:resolve_code_action(a:server_name, a:sync, a:bufnr, a:action)
+        return
     endif
 
-    " Command.
-    if has_key(a:command_or_code_action, 'command') && type(a:command_or_code_action['command']) == type('')
-        call lsp#ui#vim#execute_command#_execute({
-        \   'server_name': a:server_name,
-        \   'command_name': get(a:command_or_code_action, 'command', ''),
-        \   'command_args': get(a:command_or_code_action, 'arguments', v:null),
-        \   'sync': a:sync,
-        \   'bufnr': a:bufnr,
-        \ })
-
-    " has Command.
-    elseif has_key(a:command_or_code_action, 'command') && type(a:command_or_code_action['command']) == type({})
-        call lsp#ui#vim#execute_command#_execute({
-        \   'server_name': a:server_name,
-        \   'command_name': get(a:command_or_code_action['command'], 'command', ''),
-        \   'command_args': get(a:command_or_code_action['command'], 'arguments', v:null),
-        \   'sync': a:sync,
-        \   'bufnr': a:bufnr,
-        \ })
-    endif
+    call s:apply_action(a:server_name, a:sync, a:bufnr, a:action)
 endfunction

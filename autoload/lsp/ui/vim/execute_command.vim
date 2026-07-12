@@ -85,6 +85,48 @@ endfunction
 function! s:handle_execute_command(server_name, command, data) abort
   if lsp#client#is_error(a:data['response'])
     call lsp#utils#error('Execute command failed on ' . a:server_name . ': ' . string(a:command) . ' -> ' . string(a:data))
+    return
+  endif
+
+  call lsp#log('Execute command succeeded on ' . a:server_name, a:command, a:data)
+
+  " Handle the result if non-null
+  let l:result = a:data['response']['result']
+  if l:result isnot v:null
+    call lsp#log('Execute command result', a:server_name, a:command, l:result)
+    if type(l:result) == v:t_string && lsp#utils#is_url(l:result)
+      " URL result - open in browser
+      if !lsp#utils#open_url(l:result)
+        call lsp#utils#error('Failed to open URL: ' . l:result)
+      endif
+    elseif type(l:result) == v:t_string
+      echom 'Command result: ' . l:result
+    elseif type(l:result) == v:t_number
+      echom 'Command result: ' . l:result
+    elseif type(l:result) == v:t_dict
+      " For URI results, show them
+      if has_key(l:result, 'uri')
+        if lsp#utils#is_url(l:result['uri'])
+          call lsp#utils#open_url(l:result['uri'])
+        else
+          echom 'Command result URI: ' . l:result['uri']
+        endif
+      elseif has_key(l:result, 'urls') && type(l:result['urls']) == v:t_list
+        echom 'Command result: ' . join(l:result['urls'], ', ')
+      elseif has_key(l:result, 'url') && type(l:result['url']) == v:t_string
+        if lsp#utils#is_url(l:result['url'])
+          call lsp#utils#open_url(l:result['url'])
+        else
+          echom 'Command result: ' . l:result['url']
+        endif
+      else
+        call lsp#log('Execute command result details', l:result)
+      endif
+    endif
+  else
+    " Command succeeded but returned no result (null)
+    " Server may have sent a separate request (e.g. window/showDocument)
+    " or the command is purely server-side
   endif
 endfunction
 

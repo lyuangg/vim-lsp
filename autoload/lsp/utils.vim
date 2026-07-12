@@ -521,3 +521,57 @@ endif
 function! lsp#utils#iterable(list) abort
     return type(a:list) !=# v:t_list ? [] : a:list
 endfunction
+
+"
+" open_url
+"
+" Opens a URL in the system browser or opens a file:// URI in Vim.
+" Returns v:true on success, v:false on failure.
+"
+function! lsp#utils#open_url(uri) abort
+    if lsp#utils#is_file_uri(a:uri)
+        " file:// URI - open in Vim editor
+        let l:path = lsp#utils#uri_to_path(a:uri)
+        if !empty(l:path)
+            execute 'edit ' . fnameescape(l:path)
+            return v:true
+        endif
+        return v:false
+    elseif a:uri =~# '^https\?://'
+        " HTTP(S) URL - open in system browser asynchronously
+        if exists('*job_start')
+            if has('macunix')
+                call job_start(['open', a:uri])
+                return v:true
+            elseif has('unix')
+                call job_start(['xdg-open', a:uri])
+                return v:true
+            elseif has('win32') || has('win64')
+                call job_start(['cmd', '/c', 'start', '', a:uri])
+                return v:true
+            endif
+        else
+            " Fallback to system() for older Vim
+            if has('macunix')
+                call system('open ' . shellescape(a:uri) . ' >/dev/null 2>&1 &')
+                return v:true
+            elseif has('unix')
+                call system('xdg-open ' . shellescape(a:uri) . ' >/dev/null 2>&1 &')
+                return v:true
+            elseif has('win32') || has('win64') || has('win32unix')
+                call system('start "" ' . shellescape(a:uri))
+                return v:true
+            endif
+        endif
+    endif
+    return v:false
+endfunction
+
+"
+" is_url
+"
+" Checks if a string looks like a URL (http, https, or file).
+"
+function! lsp#utils#is_url(str) abort
+    return a:str =~# '^https\?://' || lsp#utils#is_file_uri(a:str)
+endfunction

@@ -568,6 +568,11 @@ function! lsp#default_get_supported_capabilities(server_info) abort
     \         },
     \         'isPreferredSupport': v:true,
     \         'disabledSupport': v:true,
+    \         'dataSupport': v:true,
+    \         'resolveSupport': {
+    \             'properties': ['edit', 'command'],
+    \         },
+    \         'honorsChangeAnnotations': v:true,
     \       },
     \       'codeLens': {
     \           'dynamicRegistration': v:false,
@@ -682,6 +687,7 @@ function! lsp#default_get_supported_capabilities(server_info) abort
     \   },
     \   'window': {
     \       'workDoneProgress': g:lsp_work_done_progress_enabled ? v:true : v:false,
+    \       'showDocument': { 'support': v:true },
     \   },
     \   'workspace': {
     \       'applyEdit': v:true,
@@ -1016,6 +1022,46 @@ function! s:on_request(server_name, id, request) abort
         endif
     elseif a:request['method'] ==# 'window/workDoneProgress/create'
         call s:send_response(a:server_name, { 'id': a:request['id'], 'result': v:null})
+    elseif a:request['method'] ==# 'window/showDocument'
+        let l:params = a:request['params']
+        let l:uri = l:params['uri']
+        let l:external = get(l:params, 'external', v:false)
+        let l:success = v:false
+        echom 'showDocument: ' . l:uri . ' (external=' . l:external . ')'
+        call lsp#log('window/showDocument', a:server_name, l:uri, l:external)
+        if l:external || !lsp#utils#is_file_uri(l:uri)
+            let l:success = lsp#utils#open_url(l:uri)
+            if !l:success
+                call lsp#log('window/showDocument: no browser launcher available', a:server_name, l:uri)
+            endif
+        else
+            " file:// URI - open in Vim editor
+            let l:path = lsp#utils#uri_to_path(l:uri)
+            if !empty(l:path)
+                if get(l:params, 'takeFocus', v:true)
+                    let l:bufnr = bufnr(l:path)
+                    if l:bufnr != -1
+                        if getbufvar(l:bufnr, '&modified') && !&hidden
+                            execute 'split ' . fnameescape(l:path)
+                        else
+                            execute 'buffer ' . l:bufnr
+                        endif
+                    else
+                        execute 'edit ' . fnameescape(l:path)
+                    endif
+                    if has_key(l:params, 'selection')
+                        let l:range = l:params['selection']
+                        let l:pos_bufnr = bufnr(l:path)
+                        let [l:line, l:col] = lsp#utils#position#lsp_to_vim(l:pos_bufnr, l:range['start'])
+                        call cursor(l:line, l:col)
+                    endif
+                endif
+                let l:success = v:true
+            else
+                call lsp#log('window/showDocument: path from URI is empty', a:server_name, l:uri)
+            endif
+        endif
+        call s:send_response(a:server_name, { 'id': a:request['id'], 'result': { 'success': l:success } })
     else
         " TODO: for now comment this out until we figure out a better solution.
         " We need to comment this out so that others outside of vim-lsp can

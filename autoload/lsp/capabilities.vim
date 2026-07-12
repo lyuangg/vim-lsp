@@ -189,6 +189,16 @@ function! lsp#capabilities#get_code_action_kinds(server_name) abort
     return []
 endfunction
 
+" Check if the server supports codeAction/resolve.
+" Looks for codeActionProvider.resolveProvider in server capabilities.
+function! lsp#capabilities#has_code_action_resolve_provider(server_name) abort
+    let l:capabilities = lsp#get_server_capabilities(a:server_name)
+    if !empty(l:capabilities) && has_key(l:capabilities, 'codeActionProvider') && type(l:capabilities['codeActionProvider']) == type({})
+        return get(l:capabilities['codeActionProvider'], 'resolveProvider', v:false)
+    endif
+    return v:false
+endfunction
+
 function! lsp#capabilities#has_completion_provider(server_name) abort
     return s:has_provider(a:server_name, 'completionProvider')
 endfunction
