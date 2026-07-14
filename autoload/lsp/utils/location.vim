@@ -15,6 +15,7 @@ function! s:open_location(path, line, col, ...) abort
         let l:cmd = l:mods . ' ' . (l:buffer !=# -1 ? 'sb ' . l:buffer : 'split ' . fnameescape(a:path)) . ' | '
     endif
     execute l:cmd . 'call cursor('.a:line.','.a:col.')'
+    setlocal buflisted
 endfunction
 
 " @param location = {
