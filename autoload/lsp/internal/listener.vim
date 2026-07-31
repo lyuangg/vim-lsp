@@ -46,29 +46,84 @@ function! lsp#internal#listener#flush(buf) abort
         return []
     endif
     if len(l:raw) == 1
-        let l:c = l:raw[0]
-        let l:new_end = l:c.lnum + (l:c.end - l:c.lnum) + l:c.added
-        if l:c.lnum < l:new_end
-            let l:text = join(getbufline(a:buf, l:c.lnum, l:new_end - 1), "\n") . "\n"
-        else
-            let l:text = ''
-        endif
-        let l:lsp_changes = [{
-            \ 'range': {
-            \   'start': {'line': l:c.lnum - 1, 'character': 0},
-            \   'end': {'line': l:c.end - 1, 'character': 0},
-            \ },
-            \ 'text': l:text,
-            \ }]
+        let l:lsp_changes = s:single_change(a:buf, l:raw[0])
     else
-        " Multiple changes accumulated: line numbers from earlier changes
-        " reference intermediate buffer states, but getbufline() reads the
-        " final state, so individual ranges would carry wrong text.
-        " Send full content instead (always valid per LSP spec).
-        let l:lsp_changes = [{'text': join(lsp#utils#buffer#_get_lines(a:buf), "\n")}]
+        " Multiple changes accumulated. Each change's lnum/end references the
+        " buffer state at the time it was recorded, so reading the replaced
+        " text range-by-range from the final buffer would be wrong.
+        " Merge them into ONE change covering the whole affected region (in
+        " original coordinates) and send the current text of that region. This
+        " keeps didChange incremental during continuous typing instead of
+        " falling back to sending the full document.
+        let l:lsp_changes = s:merge_changes(a:buf, l:raw)
     endif
     let l:state.lsp_cache = {'tick': l:tick, 'changes': l:lsp_changes}
     return l:lsp_changes
+endfunction
+
+" Convert a single listener change into an LSP TextDocumentContentChangeEvent.
+" listener_add reports the changed line range as [lnum, end) (1-based, end
+" exclusive) plus the net number of added lines. The whole range is replaced
+" by the current text of those lines.
+function! s:single_change(buf, c) abort
+    let l:new_end = a:c.lnum + (a:c.end - a:c.lnum) + a:c.added
+    if a:c.lnum < l:new_end
+        let l:text = join(getbufline(a:buf, a:c.lnum, l:new_end - 1), "\n") . "\n"
+    else
+        let l:text = ''
+    endif
+    return [{
+        \ 'range': {
+        \   'start': {'line': a:c.lnum - 1, 'character': 0},
+        \   'end': {'line': a:c.end - 1, 'character': 0},
+        \ },
+        \ 'text': l:text,
+        \ }]
+endfunction
+
+" Merge accumulated listener changes into a single change whose range covers
+" the whole affected region.
+"
+" With only insertions (added >= 0), every change's reported lnum/end is at
+" or below its original position, so the union [min_lnum, max_end) is a
+" superset of the affected original lines and no change touches lines above
+" min_lnum. The region still starts at min_lnum in the final buffer, its
+" final size is (max_end - min_lnum) original lines plus the net added line
+" count, and replacing that range with the current text of the region is
+" always a valid LSP content change that matches the buffer exactly.
+"
+" When a change deleted whole lines (added < 0), a later change's line
+" numbers reference the shifted buffer state, so the union can't be derived
+" from the raw values alone. Fall back to sending the full document, which is
+" always valid per the LSP spec.
+function! s:merge_changes(buf, changes) abort
+    let l:min_lnum = a:changes[0].lnum
+    let l:max_end = a:changes[0].end
+    let l:sum_added = a:changes[0].added
+    if l:sum_added < 0
+        return [{'text': join(lsp#utils#buffer#_get_lines(a:buf), "\n")}]
+    endif
+    for l:c in a:changes[1:]
+        if l:c.added < 0
+            return [{'text': join(lsp#utils#buffer#_get_lines(a:buf), "\n")}]
+        endif
+        if l:c.lnum < l:min_lnum | let l:min_lnum = l:c.lnum | endif
+        if l:c.end > l:max_end | let l:max_end = l:c.end | endif
+        let l:sum_added += l:c.added
+    endfor
+    let l:new_end_line = l:min_lnum + (l:max_end - l:min_lnum) + l:sum_added
+    if l:min_lnum < l:new_end_line
+        let l:text = join(getbufline(a:buf, l:min_lnum, l:new_end_line - 1), "\n") . "\n"
+    else
+        let l:text = ''
+    endif
+    return [{
+        \ 'range': {
+        \   'start': {'line': l:min_lnum - 1, 'character': 0},
+        \   'end': {'line': l:max_end - 1, 'character': 0},
+        \ },
+        \ 'text': l:text,
+        \ }]
 endfunction
 
 function! lsp#internal#listener#get_lines_cached(buf) abort
